@@ -1,0 +1,246 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(dplyr.summarise.inform = FALSE)
+
+library(redcapAPI)
+library(dplyr)
+
+# This file contains a list of tokens to access the API of each of the ICARIA HF 
+# REDCap project. As these tokens allow to access sensible data, this file is
+# not shared. If you need to use this script, you will have to request your API
+# tokens through REDCap.
+source("tokens.R")
+
+ExportNCAllHealthFacilities <- function(redcap.api.url, redcap.tokens) {
+  # Export the non-compliant forms completed in each of the ICARIA Health 
+  # Facility REDCap projects and append all data sets in a unique data frame.
+  #
+  # Args:
+  #   redcap.api.url: String representing the URL to access the REDCap API.
+  #   redcap.tokens:  List of tokens (Strings) to access each of the ICARIA 
+  #                   REDCap projects.
+  # 
+  # Returns:
+  #   Data frame with all the data together of different ICARIA Health 
+  #   Facilities.
+  
+  data <- data.frame()
+  for (hf in names(redcap.tokens)) {
+    print(paste("Extracting data from", hf))
+    
+    kREDCapEvents <-("out_of_schedule_arm_1")  
+    kREDCapFields <- c("record_id", "comp_contact_type", "comp_child_seen",
+                       "comp_why_not_child_seen", "comp_compliant", 
+                       "comp_why_not_compliant", "comp_why_phone", 
+                       "comp_caretaker_phone", "comp_compliant_2", 
+                       "comp_why_not_compliant_2", "comp_date")
+    rcon <- redcapConnection(redcap.api.url, redcap.tokens[[hf]])
+    hf.data <- exportRecords(
+      rcon    = rcon, 
+      factors = F, 
+      labels  = F, 
+      events  = kREDCapEvents,
+      fields  = kREDCapFields
+    )
+    
+    hf.data <- cbind(hf = hf, hf.data)
+    data <- rbind(data, hf.data)
+  }
+  
+  return(data)
+}
+
+# Reporting date
+data_timestamp <- Sys.time()
+
+# Retrieve all non-compliant vars of interest of completed forms
+non.compliant.data <- ExportNCAllHealthFacilities(kRedcapAPIURL, kRedcapTokens)
+non.compliant.data <- non.compliant.data[
+  which(non.compliant.data$noncompliant_complete == 2), ]
+```
+
+---
+title: "ICARIA Non-compliants"
+author: "Máximo Ramírez Robles"
+date: `r data_timestamp`
+output: html_document
+---
+
+<style>
+body {
+  text-align: justify
+}
+</style>
+
+
+This script analyses the reasons why the ICARIA participants become 
+non-compliant. At the date of this document, a non-compliant participant is a 
+participant who didn't come for her last appointment for more than 4 weeks 
+considering all EPI visits. To compute that, we use the <i>int_next_visit var
+</i> in the Intervention Data Collection Instrument (DCI) (Q24. Return date) of 
+the last EPI visit carried out by the participant. The reasons of being 
+non-compliant will be retrieved from the Non-compliant DCI.
+
+```{r summary, echo=FALSE}
+# Indicator 1: Number of total non-compliant contacts and disaggregated by
+# household visits and phone contacts
+n.contacts <- nrow(non.compliant.data)
+contact.types <- table(non.compliant.data$comp_contact_type)
+
+n.contacts.visit <- contact.types[["1"]]
+n.contacts.phone <- contact.types[["2"]]
+```
+
+## Summary
+
+A total of <b>`r n.contacts`</b> contacts have been carried out since the 
+beginning of the trial (<b>`r n.contacts.visit`</b> household visits and 
+<b>`r n.contacts.phone`</b> phone calls).
+
+```{r non.compliant.participants, echo=FALSE}
+# We filter the last contact with each non-compliant participant
+group.by.participant <- group_by(non.compliant.data, hf, record_id)
+last.contacts <- summarise(group.by.participant, comp_date = max(comp_date))
+last.contacts <- merge(last.contacts, non.compliant.data)
+
+# Indicator 2: Number of non-compliant participants contacted
+n.non.compliant <- nrow(last.contacts)
+```
+
+A participant may be contacted more than once. This can happen either because 
+the contact was not satisfactory enough to assess the child status or because a 
+participant may be non-compliant more than once. Thus, <b>`r n.non.compliant`
+</b> participants have been contacted since the beginning of the trial for being 
+non-compliant.
+
+### ☖ Household Visits
+
+```{r household.visits, echo=FALSE}
+# We filter last contacts done by a household visit
+hh.visits <- last.contacts[which(last.contacts$comp_contact_type == 1), ]
+
+# Indicator 3: Number of non-compliant participants who were lastly contacted
+#              through a household visit
+n.hh.visits <- nrow(hh.visits)
+
+# Indicator 4: Number of non-compliant participants successfully reached by
+#              field workers through a household visit (children seen)
+seen.participants <- table(hh.visits$comp_child_seen)
+n.seen.participants <- seen.participants[["1"]]
+n.not.seen.participants <- seen.participants[["0"]]
+```
+
+For these <b>`r n.non.compliant`</b> non-compliant participants, 
+<b>`r n.hh.visits`</b> were lastly contacted through a household visit: 
+<b>`r n.seen.participants`</b> were seen by the ICARIA field workers. The other 
+<b>`r n.not.seen.participants`</b> were not seen due to:
+
+```{r hh.why.not.seen, echo=FALSE}
+# Indicator 5: Number of non-compliant participants not seen during the last
+#              household visit disaggregated by the reason why they were not 
+#              seen
+hh.visits$comp_why_not_child_seen <- factor(
+  x      = hh.visits$comp_why_not_child_seen, 
+  levels = 1:4
+)
+why.not.seen <- table(
+  hh.visits$comp_why_not_child_seen[hh.visits$comp_child_seen == 0])
+
+Reason <- c("Absent", "Admitted to hospital", "Dead", "Migrated")
+table.why.not.seen <- data.frame(Reason, why.not.seen)
+colnames(table.why.not.seen) <- c("Reason", "Code", "n")
+
+knitr::kable(table.why.not.seen[, c("Reason", "n")])
+```
+
+For the <b>`r n.seen.participants`</b> that were seen by the ICARIA staff during 
+the last household visit, they didn't come to the HF for their last appointment 
+due to:
+
+```{r hh.why.not.come.hf, echo=FALSE}
+# Indicator 6: Number of non-compliant participants seen during the last
+#              household visit disaggregated by the reason why they were not 
+#              come to the HF for their last EPI appointment
+hh.visits$comp_why_not_compliant <- factor(
+  x      = hh.visits$comp_why_not_compliant, 
+  levels = c(1:5, 88)  ## 88 = other
+)
+why.not.come <- table(
+  hh.visits$comp_why_not_compliant[
+    hh.visits$comp_child_seen == 1 & hh.visits$comp_compliant == 0])
+
+Reason <- c("The child was/is sick", "I forgot", "I do not have the time", 
+            "I was away", "I do not want to continue with the study", "Other")
+table.why.not.come <- data.frame(Reason, why.not.come)
+colnames(table.why.not.come) <- c("Reason", "Code", "n")
+
+knitr::kable(table.why.not.come[, c("Reason", "n")])
+
+table.not.assessed <- table(
+  hh.visits$comp_compliant[which(hh.visits$comp_child_seen == 1)], 
+  useNA = "always"
+)
+
+reported.to.come <- table.not.assessed[2]
+absent.caretaker <- table.not.assessed[3]
+```
+
+<small><b><u>Note:</u></b> In addition, `r reported.to.come` caretakers reported 
+that they came to the HF for the last EPI visit and there are 
+`r absent.caretaker` cases in which the caretaker was not around and the ICARIA 
+field workers were not able to asses the reason why they didn't come to the HF.
+</small>
+
+### ☏ Phone calls
+
+```{r phone.calls, echo=FALSE}
+# We filter last contacts done by a phone call
+phone.calls <- last.contacts[which(last.contacts$comp_contact_type == 2), ]
+
+# Indicator 7: Number of non-compliant participants who were lastly contacted
+#              through a phone call
+n.phone.calls <- nrow(phone.calls)
+
+# Indicator 8: Number of caretakers of non-compliant participants successfully 
+#              reached by field workers through a phone call
+reached.caretakers <- table(phone.calls$comp_caretaker_phone)
+n.reached.caretakers <- reached.caretakers[["1"]]
+n.not.reached.caretakers <- reached.caretakers[["0"]]
+```
+
+On the other hand, <b>`r n.phone.calls`</b> participants were lastly contacted 
+through a phone call: <b>`r n.reached.caretakers`</b> were successfully reached. 
+For the other <b>`r n.not.reached.caretakers`</b>, the ICARIA field workers were 
+not able to speak with the participant's caretaker. In this case, for the
+<b>`r n.reached.caretakers`</b> reached caretakers, they reported not coming to
+the HF for their last appointment due to:
+
+```{r call.why.not.come.hf, echo=FALSE}
+# Indicator 9: Number of non-compliant participants in which their caretakers
+#              were reached by phone disaggregated by the reason why they were 
+#              not come to the HF for their last EPI appointment
+phone.calls$comp_why_not_compliant_2 <- factor(
+  x      = phone.calls$comp_why_not_compliant_2, 
+  levels = c(1:5, 88)  ## 88 = other
+)
+why.not.come <- table(
+  phone.calls$comp_why_not_compliant_2[
+    phone.calls$comp_caretaker_phone == 1 & phone.calls$comp_compliant_2 == 0])
+
+Reason <- c("The child was/is sick", "I forgot", "I do not have the time", 
+            "I was away", "I do not want to continue with the study", "Other")
+table.why.not.come <- data.frame(Reason, why.not.come)
+colnames(table.why.not.come) <- c("Reason", "Code", "n")
+
+knitr::kable(table.why.not.come[, c("Reason", "n")])
+
+table.not.assessed <- table(
+  phone.calls$comp_compliant_2[which(phone.calls$comp_caretaker_phone == 1)], 
+  useNA = "always"
+)
+
+dont.know.if.come <- table.not.assessed[2]
+```
+
+<small><b><u>Note:</u></b> In addition, `r dont.know.if.come` caretakers didn't 
+know if they had brought their children to the last EPI visit.</small>
